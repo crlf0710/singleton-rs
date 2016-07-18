@@ -1,6 +1,6 @@
 [package]
 name = "singleton"
-version = "0.1.1"
+version = "0.1.2-pre"
 authors = ["CrLF0710 <crlf0710@gmail.com>"]
 description = "Singleton holder that ensures object properly destructed at exit."
 license = "MIT"
