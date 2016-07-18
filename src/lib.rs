@@ -8,14 +8,15 @@ use std::ptr;
 use std::mem;
 
 struct CleanUpRecord {
-    pub f: * const fn (* mut ()),
-    pub ptr: * mut (),
+    pub f: *const fn(*mut ()),
+    pub ptr: *mut (),
 }
 
 unsafe impl Send for CleanUpRecord {}
 
 lazy_static! {
-    static ref CLEANUP_QUEUE : Mutex<Vec<CleanUpRecord>> = Mutex::new(Vec::new());
+    static ref CLEANUP_QUEUE :
+Mutex<Vec<CleanUpRecord>> = Mutex::new(Vec::new());
 }
 
 pub struct Singleton<T: Send + Default> {
@@ -24,27 +25,30 @@ pub struct Singleton<T: Send + Default> {
 
 unsafe impl<T> Send for Singleton<T> where T: Send + Default {}
 
-impl<T> Default for Singleton<T> where T: Send + Default {
+impl<T> Default for Singleton<T>
+    where T: Send + Default
+{
     fn default() -> Self {
         Self::new::<T>()
     }
 }
 
-impl<T> Singleton<T> where T: Send + Default {
+impl<T> Singleton<T>
+    where T: Send + Default
+{
     fn new<X: Send + Default>() -> Singleton<X> {
-        Singleton::<X> {
-            ptr: AtomicPtr::default(),
-        }
+        Singleton::<X> { ptr: AtomicPtr::default() }
     }
-    fn cleanup_fn<X: Send + Default>(ptr: * mut ()) {
-        let ptr_mut: * mut Mutex<X> = unsafe { mem::transmute(ptr) };
+    fn cleanup_fn<X: Send + Default>(ptr: *mut ()) {
+        let ptr_mut: *mut Mutex<X> = unsafe { mem::transmute(ptr) };
         mem::drop(unsafe { Box::from_raw(ptr_mut) })
     }
 
     extern "C" fn cleanup_callback() {
         let guard = CLEANUP_QUEUE.lock().unwrap();
         for it in (*guard).iter() {
-            let cleanup_fn: fn(* mut ()) = unsafe { mem::transmute(it.f.as_ref().unwrap())};
+            let cleanup_fn: fn(*mut ()) =
+                unsafe { mem::transmute(it.f.as_ref().unwrap()) };
             cleanup_fn(it.ptr);
         }
     }
@@ -60,12 +64,16 @@ impl<T> Singleton<T> where T: Send + Default {
     }
 
     pub fn singleton(&'static self) -> &'static Mutex<T> {
-        let null_ptr = ptr::null_mut() as * mut Mutex<T>;
-        let invalid_ptr = 1 as * mut Mutex<T>;
+        let null_ptr = ptr::null_mut() as *mut Mutex<T>;
+        let invalid_ptr = 1 as *mut Mutex<T>;
         let mut raw_ptr = self.ptr.load(Ordering::SeqCst);
         while raw_ptr == null_ptr {
-            if self.ptr.compare_exchange(null_ptr, invalid_ptr, Ordering::SeqCst,
-                                         Ordering::Relaxed).is_err() {
+            if self.ptr
+                .compare_exchange(null_ptr,
+                                  invalid_ptr,
+                                  Ordering::SeqCst,
+                                  Ordering::Relaxed)
+                .is_err() {
                 raw_ptr = self.ptr.load(Ordering::SeqCst);
                 continue;
             }
@@ -74,8 +82,8 @@ impl<T> Singleton<T> where T: Send + Default {
             let ptr = Box::into_raw(Box::new(Mutex::new(T::default())));
 
             Self::cleanup_register(CleanUpRecord {
-                f: Self::cleanup_fn::<T> as * const _,
-                ptr: unsafe {mem::transmute(ptr) },
+                f: Self::cleanup_fn::<T> as *const _,
+                ptr: unsafe { mem::transmute(ptr) },
             });
 
             self.ptr.store(ptr, Ordering::SeqCst);
@@ -86,25 +94,25 @@ impl<T> Singleton<T> where T: Send + Default {
             raw_ptr = self.ptr.load(Ordering::SeqCst);
         }
 
-        unsafe {raw_ptr.as_ref()}.unwrap()
+        unsafe { raw_ptr.as_ref() }.unwrap()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Singleton};
+    use super::Singleton;
 
     struct A;
     impl Default for A {
         fn default() -> Self {
-            A{}
+            A {}
         }
     }
 
     struct B;
     impl Default for B {
         fn default() -> Self {
-            B{}
+            B {}
         }
     }
 
