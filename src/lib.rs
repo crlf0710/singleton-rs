@@ -36,7 +36,7 @@ impl<T> Default for Singleton<T>
 impl<T> Singleton<T>
     where T: Send + Default
 {
-    fn new<X: Send + Default>() -> Singleton<X> {
+    pub fn new<X: Send + Default>() -> Singleton<X> {
         Singleton::<X> { ptr: AtomicPtr::default() }
     }
     fn cleanup_fn<X: Send + Default>(ptr: *mut ()) {
