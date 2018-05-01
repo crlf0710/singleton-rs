@@ -1,11 +1,10 @@
 [package]
 name = "singleton"
-version = "0.1.2-pre"
+version = "0.2.0"
 authors = ["CrLF0710 <crlf0710@gmail.com>"]
-description = "Singleton holder that ensures object properly destructed at exit."
+description = "Singleton holder for convenient global state management."
 license = "MIT"
 repository = "https://github.com/crlf0710/singleton-rs"
 
-[dependencies]
-libc = "0.2"
-lazy_static = "0.2"
+[features]
+const_fn = []

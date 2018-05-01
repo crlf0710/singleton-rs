@@ -1,100 +1,153 @@
-#[macro_use]
-extern crate lazy_static;
-extern crate libc;
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::ptr::null_mut;
+use std::mem::drop;
 
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, Ordering};
-use std::ptr;
-use std::mem;
-
-struct CleanUpRecord {
-    pub f: *const fn(*mut ()),
-    pub ptr: *mut (),
+#[repr(usize)]
+enum SingletonState {
+    Initial = 0,
+    Loading = 1,
+    Ready = 2,
+    Finalized = 3,
 }
 
-unsafe impl Send for CleanUpRecord {}
-
-lazy_static! {
-    static ref CLEANUP_QUEUE :
-Mutex<Vec<CleanUpRecord>> = Mutex::new(Vec::new());
+/// A pointer type for holding shared global state in multi-thread environment.
+pub struct Singleton<T: Sync> {
+    #[doc(hidden)]
+    pub state: AtomicUsize,
+    #[doc(hidden)]
+    pub ptr: AtomicPtr<T>,
 }
 
-pub struct Singleton<T: Send + Default> {
-    ptr: AtomicPtr<Mutex<T>>,
+/// Create an uninitialized singleton.
+///
+/// This is intended as a workaround before const fn stablizes.
+/// When const fn is stablized, you can just call Singleton::new().
+#[macro_export]
+macro_rules! make_singleton {
+    () => {
+        Singleton {
+            state: ::std::sync::atomic::AtomicUsize::new(0),
+            ptr: ::std::sync::atomic::AtomicPtr::new(::std::ptr::null_mut())
+        }
+    };
 }
 
-unsafe impl<T> Send for Singleton<T> where T: Send + Default {}
-
-impl<T> Default for Singleton<T>
-    where T: Send + Default
-{
+impl<T: Sync> Default for Singleton<T> {
     fn default() -> Self {
-        Self::new::<T>()
+        make_singleton!()
     }
 }
 
-impl<T> Singleton<T>
-    where T: Send + Default
-{
-    pub fn new<X: Send + Default>() -> Singleton<X> {
-        Singleton::<X> { ptr: AtomicPtr::default() }
-    }
-    fn cleanup_fn<X: Send + Default>(ptr: *mut ()) {
-        let ptr_mut: *mut Mutex<X> = unsafe { mem::transmute(ptr) };
-        mem::drop(unsafe { Box::from_raw(ptr_mut) })
+impl<T: Sync> Singleton<T> {
+    /// Create an uninitialized singleton.
+    #[cfg(feature = "const_fn")]
+    pub const fn new() -> Self {
+        make_singleton!()
     }
 
-    extern "C" fn cleanup_callback() {
-        let guard = CLEANUP_QUEUE.lock().unwrap();
-        for it in (*guard).iter() {
-            let cleanup_fn: fn(*mut ()) =
-                unsafe { mem::transmute(it.f.as_ref().unwrap()) };
-            cleanup_fn(it.ptr);
+    /// Create an uninitialized singleton.
+    #[cfg(not(feature = "const_fn"))]
+    pub fn new() -> Self {
+        make_singleton!()
+    }
+
+    /// Access the singleton; initialize it with `Default::default()` if it is uninitialized.
+    ///
+    pub fn get(&self) -> &T
+    where
+        T: Default,
+    {
+        self.get_or_insert_with(<T as Default>::default)
+    }
+
+    /// Access the singleton; or return `None` if it is not yet uninitialized.
+    pub fn get_opt(&self) -> Option<&T> {
+        unsafe { self.ptr.load(Ordering::SeqCst).as_ref() }
+    }
+
+    fn error_stateshift() {
+        // never type is not landing yet.
+        panic!("singleton: state shifted during singleton initialization. Maybe caused by unsafe finalized() calling. ");
+    }
+
+    fn error_finalized() {
+        // never type is not landing yet.
+        panic!("singleton: trying to access a finalized singleton. Maybe caused by unsafe finalized() calling. ");
+    }
+
+    /// Access the singleton; initialize it with custom function if it is uninitialized.
+    pub fn get_or_insert_with<F>(&self, f: F) -> &T
+    where
+        F: FnOnce() -> T,
+    {
+        if let Some(v) = unsafe { self.ptr.load(Ordering::SeqCst).as_ref() } {
+            return v;
         }
-    }
 
-    fn cleanup_register(record: CleanUpRecord) {
-        let mut guard = CLEANUP_QUEUE.lock().unwrap();
-        if (*guard).len() == 0 {
-            unsafe {
-                libc::atexit(Self::cleanup_callback);
+        let mut cur_state = self.state.compare_and_swap(
+            SingletonState::Initial as _,
+            SingletonState::Loading as _,
+            Ordering::SeqCst,
+        );
+        'spin: loop {
+            if cur_state == SingletonState::Loading as _ {
+                // some other threading is trying to initialize this singleton.
+                // wait and retry.
+                cur_state = self.state.load(Ordering::SeqCst);
+                continue 'spin;
+            } else if cur_state == SingletonState::Initial as _
+                || cur_state == SingletonState::Ready as _
+            {
+                if cur_state == SingletonState::Initial as _ {
+                    let v = Box::into_raw(Box::new(f()));
+                    self.ptr.store(v, Ordering::SeqCst);
+                    cur_state = self.state.compare_and_swap(
+                        SingletonState::Loading as _,
+                        SingletonState::Ready as _,
+                        Ordering::SeqCst,
+                    );
+
+                    if cur_state != SingletonState::Loading as _ {
+                        Self::error_stateshift();
+                        unreachable!();
+                    }
+                }
+
+                if let Some(v) =
+                    unsafe { self.ptr.load(Ordering::SeqCst).as_ref() }
+                {
+                    return v;
+                } else {
+                    Self::error_stateshift();
+                    unreachable!();
+                }
             }
+
+            Self::error_finalized();
+            unreachable!();
         }
-        (*guard).push(record);
+        // unreachable!()
     }
 
-    pub fn singleton(&'static self) -> &'static Mutex<T> {
-        let null_ptr = ptr::null_mut() as *mut Mutex<T>;
-        let invalid_ptr = 1 as *mut Mutex<T>;
-        let mut raw_ptr = self.ptr.load(Ordering::SeqCst);
-        while raw_ptr == null_ptr {
-            if self.ptr
-                .compare_exchange(null_ptr,
-                                  invalid_ptr,
-                                  Ordering::SeqCst,
-                                  Ordering::Relaxed)
-                .is_err() {
-                raw_ptr = self.ptr.load(Ordering::SeqCst);
-                continue;
-            }
-
-            // we're chosen!
-            let ptr = Box::into_raw(Box::new(Mutex::new(T::default())));
-
-            Self::cleanup_register(CleanUpRecord {
-                f: Self::cleanup_fn::<T> as *const _,
-                ptr: unsafe { mem::transmute(ptr) },
-            });
-
-            self.ptr.store(ptr, Ordering::SeqCst);
-            raw_ptr = ptr;
+    /// Put the singleton into a finalized state, destruct the singleton value if it is initialized.
+    ///
+    /// This is unsafe and only useful when the value holds other resources.
+    pub unsafe fn finalize(&self) {
+        self.state
+            .store(SingletonState::Finalized as _, Ordering::SeqCst);
+        let old_ptr = self.ptr.swap(null_mut(), Ordering::SeqCst);
+        if old_ptr.is_null() {
+            return;
         }
+        drop(Box::from_raw(old_ptr));
+    }
+}
 
-        while raw_ptr == invalid_ptr {
-            raw_ptr = self.ptr.load(Ordering::SeqCst);
+impl<T: Sync> Drop for Singleton<T> {
+    fn drop(&mut self) {
+        unsafe {
+            self.finalize();
         }
-
-        unsafe { raw_ptr.as_ref() }.unwrap()
     }
 }
 
@@ -102,28 +155,32 @@ impl<T> Singleton<T>
 mod tests {
     use super::Singleton;
 
-    struct A;
+    struct A(usize);
     impl Default for A {
         fn default() -> Self {
-            A {}
+            A(42)
         }
     }
 
-    struct B;
+    struct B(usize);
     impl Default for B {
         fn default() -> Self {
-            B {}
+            B(100)
         }
     }
 
-    lazy_static!{
-        static ref SINGLETON_A : Singleton<A> = Singleton::<A>::new();
-        static ref SINGLETON_B : Singleton<B> = Singleton::<B>::new();
-    }
+    static SINGLETON_A: Singleton<A> = make_singleton!();
+    static SINGLETON_B: Singleton<B> = make_singleton!();
 
     #[test]
     fn it_works() {
-        let _ = SINGLETON_A.singleton();
-        let _ = SINGLETON_B.singleton();
+        assert!(SINGLETON_A.get_opt().is_none());
+        assert!(SINGLETON_B.get_opt().is_none());
+        let a1 = SINGLETON_A.get();
+        assert!(!SINGLETON_A.get_opt().is_none());
+        let a2 = SINGLETON_A.get();
+        assert_eq!(a1 as *const _, a2 as *const _);
+        let _b = SINGLETON_B.get();
+        assert!(!SINGLETON_B.get_opt().is_none());
     }
 }
