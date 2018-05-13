@@ -25,7 +25,7 @@ pub struct Singleton<T: Send + Sync> {
 #[macro_export]
 macro_rules! make_singleton {
     () => {
-        Singleton {
+        $crate::Singleton {
             state: ::std::sync::atomic::AtomicUsize::new(0),
             ptr: ::std::sync::atomic::AtomicPtr::new(::std::ptr::null_mut())
         }

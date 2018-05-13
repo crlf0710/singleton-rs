@@ -23,7 +23,7 @@ pub struct PreemptiveSingleton<T: Send> {
 #[macro_export]
 macro_rules! make_preemptive_singleton {
     () => {
-        PreemptiveSingleton {
+        $crate::PreemptiveSingleton {
             singleton: make_singleton!()
         }
     };
