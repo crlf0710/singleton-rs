@@ -1,6 +1,7 @@
 #[macro_use]
 extern crate singleton;
-use singleton::Singleton;
+use singleton::{PreemptiveSingleton, Singleton};
+use std::cell::RefCell;
 
 struct A(usize);
 impl Default for A {
@@ -9,15 +10,15 @@ impl Default for A {
     }
 }
 
-struct B(usize);
+struct B(RefCell<usize>);
 impl Default for B {
     fn default() -> Self {
-        B(100)
+        B(RefCell::new(100))
     }
 }
 
 static SINGLETON_A: Singleton<A> = make_singleton!();
-static SINGLETON_B: Singleton<B> = make_singleton!();
+static SINGLETON_B: PreemptiveSingleton<B> = make_preemptive_singleton!();
 
 fn main() {
     assert!(SINGLETON_A.get_opt().is_none());
